@@ -4,6 +4,7 @@ import fetch from "node-fetch";
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 
+// ✅ schimbă aici liga dorită
 const TARGET_URL = "https://www.betexplorer.com/football/france/ligue-1-2024-2025/results/";
 
 async function upsertMatch(match) {
@@ -32,49 +33,81 @@ async function upsertMatch(match) {
   const browser = await playwright.chromium.launch({ headless: true });
   const page = await browser.newPage();
 
-  console.log("🌐 Opening page...");
-  await page.goto(TARGET_URL, { waitUntil: "domcontentloaded", timeout: 60000 });
+  // 📄 deschide pagina de rezultate (ignoră certificate SSL)
+  await page.goto(TARGET_URL, { waitUntil: "domcontentloaded", timeout: 60000, ignoreHTTPSErrors: true });
 
-  console.log("⏳ Waiting for match table to load...");
+  console.log("⏳ Waiting for matches list...");
   await page.waitForFunction(() => {
-    const rows = document.querySelectorAll("table.table-main tbody tr");
+    const rows = document.querySelectorAll("a.in-match");
     return rows.length > 10;
   }, { timeout: 60000 });
-  console.log("✅ Match table fully loaded.");
+  console.log("✅ Matches list loaded.");
 
-  const matches = await page.$$eval("table.table-main tbody tr", (rows) =>
-    rows
-      .map((r) => {
-        const teams = r.querySelector("a.in-match")?.innerText.trim() || "";
-        const score = r.querySelector("td.h-text-center")?.innerText.trim() || "";
-        const date = r.querySelector("td.h-text-right")?.innerText.trim() || "";
-
-        if (!teams || !score.includes("-")) return null;
-
-        const [home, away] = teams.split(" - ").map((t) => t.trim());
-        const [goalsHome, goalsAway] = score
-          .split(/[-–]/)
-          .map((n) => parseInt(n.trim()) || 0);
-
-        return { league: "Ligue 1", home, away, goalsHome, goalsAway, date };
-      })
-      .filter(Boolean)
+  // 🔗 extrage toate linkurile spre meciuri
+  const links = await page.$$eval("a.in-match", els =>
+    els.map(e => ({
+      url: e.href,
+      title: e.innerText.trim()
+    }))
   );
 
-  if (matches.length === 0) {
-    console.warn("⚠️ No matches found — maybe the page structure changed or results not yet published.");
-  } else {
-    console.log(`✅ Found ${matches.length} matches`);
+  console.log(`🔗 Found ${links.length} match links`);
+
+  const matches = [];
+
+  for (const [i, link] of links.entries()) {
+    console.log(`➡️ [${i + 1}/${links.length}] Opening ${link.url}`);
+
+    try {
+      const matchPage = await browser.newPage();
+      await matchPage.goto(link.url, { waitUntil: "domcontentloaded", timeout: 45000, ignoreHTTPSErrors: true });
+
+      // așteaptă header-ul meciului
+      await matchPage.waitForSelector("h1", { timeout: 15000 });
+
+      const matchData = await matchPage.evaluate(() => {
+        const title = document.querySelector("h1")?.innerText.trim() || "";
+        const date = document.querySelector(".wrap-section-content .date")?.innerText.trim() || "";
+        const scoreFinal = document.querySelector(".result strong")?.innerText.trim() || "";
+
+        // Scorul la pauză apare de obicei în textul: (HT: 1-0)
+        const halfText = document.querySelector(".result")?.innerText.match(/\(.*?\)/)?.[0] || "";
+        const ht = halfText.replace(/[^\d\-–]/g, "").trim();
+        const [htHome, htAway] = ht.includes("-") ? ht.split(/[-–]/).map(n => parseInt(n.trim()) || 0) : [null, null];
+
+        const [home, away] = title.split(" - ").map(t => t.trim());
+        const [goalsHome, goalsAway] = scoreFinal.split(/[-–]/).map(n => parseInt(n.trim()) || 0);
+
+        return {
+          home,
+          away,
+          date,
+          goalsHome,
+          goalsAway,
+          halftimeHome: htHome,
+          halftimeAway: htAway
+        };
+      });
+
+      if (matchData.home && matchData.away && !isNaN(matchData.goalsHome)) {
+        matchData.league = "Ligue 1";
+        matches.push(matchData);
+        await upsertMatch(matchData);
+        console.log(`⚽ ${matchData.date}: ${matchData.home} ${matchData.goalsHome}-${matchData.goalsAway} ${matchData.away} (HT ${matchData.halftimeHome}-${matchData.halftimeAway})`);
+      } else {
+        console.warn(`⚠️ Skipped invalid data for ${link.url}`);
+      }
+
+      await matchPage.close();
+    } catch (err) {
+      console.error(`💥 Failed to scrape ${link.url}:`, err.message);
+    }
+
+    // delay mic între pagini (evită rate limit)
+    await new Promise(res => setTimeout(res, 1000));
   }
 
-  let inserted = 0;
-  for (const m of matches) {
-    await upsertMatch(m);
-    console.log(`⚽ ${m.date}: ${m.home} ${m.goalsHome}-${m.goalsAway} ${m.away}`);
-    inserted++;
-  }
-
-  console.log(`🎯 Total inserted: ${inserted}`);
+  console.log(`🎯 Total matches scraped: ${matches.length}`);
   await browser.close();
   console.log("🧹 Browser closed. All done!");
 })();
