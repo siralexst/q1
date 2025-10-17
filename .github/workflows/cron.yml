@@ -13,7 +13,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 18
+
+      # 1️⃣ Instalează dependențele din package.json
       - run: npm install
+
+      # 2️⃣ Instalează browserul necesar pentru Playwright
+      - run: npx playwright install --with-deps
+
+      # 3️⃣ Rulează scriptul principal
       - run: npm run scrape
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
