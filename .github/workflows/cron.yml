@@ -13,17 +13,18 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 18
-
-      # 1️⃣ Instalează dependențele din package.json
       - run: npm install
-
-      # 2️⃣ Instalează browserul necesar pentru Playwright
       - run: npx playwright install --with-deps
-
-      # 3️⃣ Rulează scriptul principal
       - run: npm run scrape
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           ALLOWED_LEAGUES: ${{ secrets.ALLOWED_LEAGUES }}
           USER_AGENT: ${{ secrets.USER_AGENT }}
+
+      # 🧠 upload debug screenshot
+      - name: Upload debug screenshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: aiscore_debug
+          path: aiscore_debug.png
