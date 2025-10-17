@@ -1,5 +1,6 @@
 import playwright from "playwright";
 import fetch from "node-fetch";
+import path from "path";
 
 // 🔑 Variabile din GitHub Secrets
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -60,41 +61,47 @@ async function upsertMatch(payload) {
 
   try {
     console.log("🌐 Opening AiScore homepage...");
-    await page.goto(targetUrl, { waitUntil: "domcontentloaded" });
+    await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 60000 });
 
-    // Așteaptă taburile principale
+    // Așteaptă bara de taburi
     await page.waitForSelector("button, .tab-item, .nav-tabs", { timeout: 20000 });
     console.log("✅ Navigation bar loaded.");
 
-    // Click pe tab-ul Finished
+    // Click pe tabul Finished
     const finishedTab =
       (await page.$("text=Finished")) ||
       (await page.$("button:has-text('Finished')")) ||
       (await page.$("li:has-text('Finished')"));
+
     if (finishedTab) {
       await finishedTab.click();
       console.log("✅ Clicked 'Finished' tab.");
     } else {
       console.log("❌ Couldn't find Finished tab, aborting.");
-      await page.screenshot({ path: "aiscore_debug_failed.png", fullPage: true });
       await browser.close();
       return;
     }
 
-    // Așteaptă să apară conținutul meciurilor
-    await page.waitForSelector(".comp-list a.match-container", { timeout: 20000 });
-    console.log("✅ Finished matches are visible. Scrolling...");
+    // Așteaptă ca meciurile să fie complet randate
+    console.log("🕐 Waiting for matches to render completely...");
+    await page.waitForFunction(() => {
+      const matches = document.querySelectorAll(".comp-list a.match-container");
+      return matches.length > 10;
+    }, { timeout: 30000 });
+    console.log("✅ Matches fully rendered on screen.");
 
-    // Scroll progresiv pentru a încărca toate ligile
-    for (let i = 0; i < 10; i++) {
+    // Scroll progresiv
+    for (let i = 0; i < 12; i++) {
       await page.evaluate(() => window.scrollBy(0, window.innerHeight));
-      await page.waitForTimeout(1500);
+      await page.waitForTimeout(1200);
     }
 
-    await page.screenshot({ path: "aiscore_debug.png", fullPage: true });
-    console.log("📸 Screenshot saved (aiscore_debug.png)");
+    // Screenshot complet — garantat în workspace
+    const debugPath = path.resolve(process.cwd(), "aiscore_debug.png");
+    await page.screenshot({ path: debugPath, fullPage: true });
+    console.log("📸 Screenshot saved at:", debugPath);
 
-    // Extragem toate meciurile din tabul Finished
+    // Extrage toate meciurile
     const matches = await page.$$eval(".comp-list a.match-container", (nodes) =>
       nodes.map((m) => {
         const status = m.querySelector(".status")?.innerText?.trim() || "";
@@ -163,9 +170,13 @@ async function upsertMatch(payload) {
     }
 
     console.log(`🏁 Total meciuri inserate: ${totalInserted}`);
+
+    await page.waitForTimeout(2000);
   } catch (err) {
     console.error("💥 Scraper failed:", err.message);
-    await page.screenshot({ path: "aiscore_debug_failed.png", fullPage: true });
+    const failPath = path.resolve(process.cwd(), "aiscore_debug_failed.png");
+    await page.screenshot({ path: failPath, fullPage: true });
+    console.log("📸 Failure screenshot saved at:", failPath);
   }
 
   await browser.close();
