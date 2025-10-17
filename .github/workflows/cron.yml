@@ -3,13 +3,14 @@ name: BetExplorer Scraper
 on:
   workflow_dispatch:
   schedule:
-    - cron: "30 22 * * *" # rulează la 01:30 RO
+    - cron: "30 22 * * *" # rulează zilnic la 01:30 RO
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Setup Node.js
@@ -19,6 +20,9 @@ jobs:
 
       - name: Install dependencies
         run: npm install playwright node-fetch
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps
 
       - name: Run BetExplorer scraper
         run: node scraper.js
