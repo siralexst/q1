@@ -18,7 +18,9 @@ async function upsertMatch(match) {
       },
       body: JSON.stringify(match)
     });
-    if (!res.ok) console.error("❌ Supabase insert error:", await res.text());
+    if (!res.ok) {
+      console.error("❌ Supabase insert error:", await res.text());
+    }
   } catch (e) {
     console.error("⚠️ Upsert failed:", e.message);
   }
@@ -26,11 +28,19 @@ async function upsertMatch(match) {
 
 (async () => {
   console.log(`🏁 Scraping BetExplorer results from: ${TARGET_URL}`);
+
   const browser = await playwright.chromium.launch({ headless: true });
   const page = await browser.newPage();
 
+  console.log("🌐 Opening page...");
   await page.goto(TARGET_URL, { waitUntil: "domcontentloaded", timeout: 60000 });
-  await page.waitForSelector("table.table-main tbody tr", { timeout: 20000 });
+
+  console.log("⏳ Waiting for match table to load...");
+  await page.waitForFunction(() => {
+    const rows = document.querySelectorAll("table.table-main tbody tr");
+    return rows.length > 10;
+  }, { timeout: 60000 });
+  console.log("✅ Match table fully loaded.");
 
   const matches = await page.$$eval("table.table-main tbody tr", (rows) =>
     rows
@@ -38,11 +48,12 @@ async function upsertMatch(match) {
         const teams = r.querySelector("a.in-match")?.innerText.trim() || "";
         const score = r.querySelector("td.h-text-center")?.innerText.trim() || "";
         const date = r.querySelector("td.h-text-right")?.innerText.trim() || "";
+
         if (!teams || !score.includes("-")) return null;
 
         const [home, away] = teams.split(" - ").map((t) => t.trim());
         const [goalsHome, goalsAway] = score
-          .split("-")
+          .split(/[-–]/)
           .map((n) => parseInt(n.trim()) || 0);
 
         return { league: "Ligue 1", home, away, goalsHome, goalsAway, date };
@@ -50,7 +61,11 @@ async function upsertMatch(match) {
       .filter(Boolean)
   );
 
-  console.log(`✅ Found ${matches.length} matches`);
+  if (matches.length === 0) {
+    console.warn("⚠️ No matches found — maybe the page structure changed or results not yet published.");
+  } else {
+    console.log(`✅ Found ${matches.length} matches`);
+  }
 
   let inserted = 0;
   for (const m of matches) {
@@ -61,4 +76,5 @@ async function upsertMatch(match) {
 
   console.log(`🎯 Total inserted: ${inserted}`);
   await browser.close();
+  console.log("🧹 Browser closed. All done!");
 })();
