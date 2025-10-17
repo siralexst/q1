@@ -1,30 +1,35 @@
 name: Daily AIScore Scraper
 
 on:
-  schedule:
-    - cron: '0 21 * * *' # rulează la 00:00 România
   workflow_dispatch:
+  schedule:
+    - cron: "0 22 * * *" # rulează zilnic la 22:00 UTC (~01:00 RO)
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: 18
-      - run: npm install
-      - run: npx playwright install --with-deps
-      - run: npm run scrape
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          ALLOWED_LEAGUES: ${{ secrets.ALLOWED_LEAGUES }}
-          USER_AGENT: ${{ secrets.USER_AGENT }}
 
-      # 🧠 upload debug screenshot
+      - name: Install dependencies
+        run: npm install playwright node-fetch
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps
+
+      - name: Run scraper
+        run: npm run scrape
+
       - name: Upload debug screenshot
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: aiscore_debug
-          path: aiscore_debug.png
+          path: ${{ github.workspace }}/aiscore_debug.png
