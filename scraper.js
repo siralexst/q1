@@ -1,7 +1,8 @@
 import playwright from "playwright";
 import fetch from "node-fetch";
+import fs from "fs";
 
-// 🔑 Environment variables din GitHub Secrets
+// 🔑 Environment variables (din GitHub Secrets)
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 const ALLOWED_LEAGUES = (process.env.ALLOWED_LEAGUES || "").split(",").map(s => s.trim());
@@ -13,12 +14,11 @@ date.setDate(date.getDate() - 1);
 const formatted = date.toISOString().split("T")[0].replace(/-/g, "");
 const targetUrl = `https://www.aiscore.com/${formatted}`;
 
-// 😴 Helper delay
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// 📤 Inserare meci în Supabase
+// 🔄 Inserare în Supabase
 async function upsertMatch(payload) {
   try {
     const res = await fetch(`${SUPABASE_URL}/rest/v1/matches`, {
@@ -40,7 +40,7 @@ async function upsertMatch(payload) {
   }
 }
 
-// 🚫 Pattern-uri de ignorat (fotbal feminin / tineret)
+// 🚫 Excludem ligile și echipele feminine sau de tineret
 const ignorePatterns = [
   /\b(women|ladies|female)\b/i,
   /\bU\d{1,2}\b/i,
@@ -53,99 +53,124 @@ const ignorePatterns = [
 (async () => {
   console.log(`📅 Scraping matches from: ${targetUrl}`);
 
-  const browser = await playwright.chromium.launch({ headless: true });
-  const context = await browser.newContext({ userAgent: USER_AGENT });
-  const page = await context.newPage();
-
-  await page.goto(targetUrl, { waitUntil: "networkidle" });
-
-  // Așteptăm clar să se încarce ligile
-  try {
-    await page.waitForSelector(".league-item", { timeout: 15000 });
-    console.log("✅ Page loaded: .league-item found");
-  } catch (err) {
-    console.log("⚠️ No .league-item found – the page may not have loaded fully");
-  }
-
-  // Extragem toate ligile și meciurile
-  const leagues = await page.$$eval(".league-item", leagueNodes => {
-    return leagueNodes.map(l => {
-      const league = l.querySelector(".league-name")?.innerText?.trim() || null;
-      const matches = [...l.querySelectorAll(".match-item")].map(m => {
-        const status = m.querySelector(".status")?.innerText?.trim() || "";
-        const home = m.querySelector(".team-home .name")?.innerText?.trim() || "";
-        const away = m.querySelector(".team-away .name")?.innerText?.trim() || "";
-        const score = m.querySelector(".score")?.innerText?.trim() || "";
-        const half = m.querySelector(".half-score")?.innerText?.trim() || "";
-        return { status, home, away, score, half };
-      });
-      return { league, matches };
-    });
+  const browser = await playwright.chromium.launch({
+    headless: false, // 🧠 pentru debug (false = vezi pagina completă)
+    args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    timeout: 0
   });
 
-  console.log(`ℹ️ Found ${leagues.length} leagues on page`);
+  const context = await browser.newContext({
+    userAgent: USER_AGENT,
+    viewport: { width: 1366, height: 768 }
+  });
 
-  let totalInserted = 0;
-  let totalSkipped = 0;
+  const page = await context.newPage();
 
-  for (const l of leagues) {
-    if (!l.league) continue;
+  try {
+    await page.goto(targetUrl, { waitUntil: "networkidle" });
+    console.log("🌐 Page loaded, waiting for content...");
 
-    // 🔹 1. Filtru ligă (doar cele permise)
-    if (
-      ALLOWED_LEAGUES.length &&
-      !ALLOWED_LEAGUES.some(x => l.league.toLowerCase().includes(x.toLowerCase()))
-    ) {
-      totalSkipped++;
-      continue;
+    // Derulăm pentru a încărca tot conținutul dinamic
+    await page.evaluate(async () => {
+      window.scrollTo(0, 0);
+      await new Promise(r => setTimeout(r, 1000));
+      window.scrollTo(0, document.body.scrollHeight);
+    });
+
+    // Așteptăm suplimentar ca JavaScript-ul să populeze meciurile
+    await page.waitForTimeout(12000);
+
+    // Captură de ecran (debug vizual)
+    await page.screenshot({ path: "aiscore_debug.png", fullPage: true });
+    console.log("📸 Screenshot saved: aiscore_debug.png");
+
+    // Așteptăm elementele de ligă
+    try {
+      await page.waitForSelector(".league-item", { timeout: 15000 });
+      console.log("✅ .league-item found");
+    } catch (err) {
+      console.log("⚠️ No .league-item found after waiting");
     }
 
-    // 🔹 2. Excludem ligile feminine / tineret
-    if (ignorePatterns.some(p => p.test(l.league))) {
-      console.log(`⏩ Ignored youth/female league: ${l.league}`);
-      totalSkipped++;
-      continue;
-    }
+    // Extragem toate ligile
+    const leagues = await page.$$eval(".league-item", leagueNodes => {
+      return leagueNodes.map(l => {
+        const league = l.querySelector(".league-name")?.innerText?.trim() || null;
+        const matches = [...l.querySelectorAll(".match-item")].map(m => {
+          const status = m.querySelector(".status")?.innerText?.trim() || "";
+          const home = m.querySelector(".team-home .name")?.innerText?.trim() || "";
+          const away = m.querySelector(".team-away .name")?.innerText?.trim() || "";
+          const score = m.querySelector(".score")?.innerText?.trim() || "";
+          const half = m.querySelector(".half-score")?.innerText?.trim() || "";
+          return { status, home, away, score, half };
+        });
+        return { league, matches };
+      });
+    });
 
-    for (const m of l.matches) {
-      // 🔹 3. Doar meciuri "Finished" (FT)
-      if (!m.status || !m.status.toLowerCase().includes("ft")) continue;
+    console.log(`ℹ️ Found ${leagues.length} leagues on page`);
 
-      // 🔹 4. Excludem echipe feminine / Uxx
-      if (ignorePatterns.some(p => p.test(`${m.home} ${m.away}`))) continue;
-      if (!m.score?.includes("-")) continue;
+    let totalInserted = 0;
+    let totalSkipped = 0;
 
-      // 🔹 5. Extragem scoruri
-      const [goals_home, goals_away] = m.score.split("-").map(x => parseInt(x.trim()) || 0);
-      let halftime_home = 0, halftime_away = 0;
+    for (const l of leagues) {
+      if (!l.league) continue;
 
-      if (m.half?.includes("-")) {
-        const halfParts = m.half.replace(/[()HT]/g, "").split("-");
-        halftime_home = parseInt(halfParts[0]?.trim()) || 0;
-        halftime_away = parseInt(halfParts[1]?.trim()) || 0;
+      // 🔹 1. Filtrare după ligă
+      if (
+        ALLOWED_LEAGUES.length &&
+        !ALLOWED_LEAGUES.some(x => l.league.toLowerCase().includes(x.toLowerCase()))
+      ) {
+        totalSkipped++;
+        continue;
       }
 
-      // 🔹 6. Pregătim payload-ul pentru Supabase
-      const payload = {
-        league: l.league,
-        home_team: m.home,
-        away_team: m.away,
-        goals_home,
-        goals_away,
-        halftime_home,
-        halftime_away,
-        match_date: new Date().toISOString().split("T")[0]
-      };
+      // 🔹 2. Excludem ligile feminine / tineret
+      if (ignorePatterns.some(p => p.test(l.league))) {
+        console.log(`⏩ Ignored youth/female league: ${l.league}`);
+        totalSkipped++;
+        continue;
+      }
 
-      await upsertMatch(payload);
-      console.log(`✅ ${l.league}: ${m.home} ${goals_home}-${goals_away} ${m.away}`);
-      totalInserted++;
-      await sleep(200);
+      for (const m of l.matches) {
+        // doar Finished (FT)
+        if (!m.status || !m.status.toLowerCase().includes("ft")) continue;
+        if (ignorePatterns.some(p => p.test(`${m.home} ${m.away}`))) continue;
+        if (!m.score?.includes("-")) continue;
+
+        const [goals_home, goals_away] = m.score.split("-").map(x => parseInt(x.trim()) || 0);
+        let halftime_home = 0, halftime_away = 0;
+
+        if (m.half?.includes("-")) {
+          const halfParts = m.half.replace(/[()HT]/g, "").split("-");
+          halftime_home = parseInt(halfParts[0]?.trim()) || 0;
+          halftime_away = parseInt(halfParts[1]?.trim()) || 0;
+        }
+
+        const payload = {
+          league: l.league,
+          home_team: m.home,
+          away_team: m.away,
+          goals_home,
+          goals_away,
+          halftime_home,
+          halftime_away,
+          match_date: new Date().toISOString().split("T")[0]
+        };
+
+        await upsertMatch(payload);
+        console.log(`✅ ${l.league}: ${m.home} ${goals_home}-${goals_away} ${m.away}`);
+        totalInserted++;
+        await sleep(200);
+      }
     }
+
+    console.log(`🏁 Total meciuri inserate: ${totalInserted}`);
+    console.log(`🟡 Total ligi/meciuri ignorate: ${totalSkipped}`);
+  } catch (err) {
+    console.error("💥 Scraper failed:", err.message);
   }
 
-  console.log(`🏁 Total meciuri inserate: ${totalInserted}`);
-  console.log(`🟡 Total ligi/meciuri ignorate: ${totalSkipped}`);
-
   await browser.close();
+  console.log("🧹 Browser closed.");
 })();
