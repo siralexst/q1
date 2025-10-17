@@ -56,39 +56,62 @@ async function upsertMatch(payload) {
   let totalInserted = 0;
 
   for (const l of leagues) {
-    if (!l.league) continue;
-    if (ALLOWED_LEAGUES.length && !ALLOWED_LEAGUES.some(x => l.league.includes(x))) {
-      continue; // sari peste ligi care nu te interesează
-    }
+  if (!l.league) continue;
 
-    for (const m of l.matches) {
-      if (!m.status || !m.status.toLowerCase().includes("finished")) continue;
-      if (!m.score?.includes("-")) continue;
-
-      const [goals_home, goals_away] = m.score.split("-").map(x => parseInt(x.trim()));
-      let halftime_home = 0, halftime_away = 0;
-      if (m.half?.includes("-")) {
-        [halftime_home, halftime_away] = m.half.replace(/[()HT]/g, "").split("-").map(x => parseInt(x.trim()) || 0);
-      }
-
-      const payload = {
-        league: l.league,
-        home_team: m.home,
-        away_team: m.away,
-        goals_home,
-        goals_away,
-        halftime_home,
-        halftime_away,
-        match_date: new Date().toISOString().split("T")[0]
-      };
-
-      await upsertMatch(payload);
-      totalInserted++;
-      console.log(`✅ ${l.league}: ${m.home} ${goals_home}-${goals_away} ${m.away}`);
-      await sleep(300);
-    }
+  // ⚙️ 1️⃣ Filtrăm doar ligile dorite (ex: Premier League, Championship etc.)
+  if (ALLOWED_LEAGUES.length && !ALLOWED_LEAGUES.some(x => l.league.toLowerCase().includes(x.toLowerCase()))) {
+    continue; // sari peste alte ligi
   }
+
+  // ⚙️ 2️⃣ Excludem tot ce conține fotbal feminin sau grupe de vârstă
+  const ignorePatterns = [
+    /\b(women|ladies|female)\b/i,
+    /\bU\d{1,2}\b/i,     // ex: U15, U21
+    /\bUnder ?\d{1,2}\b/i,
+    /\bYouth\b/i,
+    /\bAcademy\b/i,
+    /\bReserve\b/i
+  ];
+
+  if (ignorePatterns.some(p => p.test(l.league))) {
+    console.log(`⏩ Ignored youth/female league: ${l.league}`);
+    continue;
+  }
+
+  for (const m of l.matches) {
+    if (!m.status || !m.status.toLowerCase().includes("ft")) continue; // doar Finished
+
+    // excludem și dacă echipele au în nume Women / U18 etc.
+    if (ignorePatterns.some(p => p.test(`${m.home} ${m.away}`))) continue;
+
+    if (!m.score?.includes("-")) continue;
+
+    const [goals_home, goals_away] = m.score.split("-").map(x => parseInt(x.trim()));
+    let halftime_home = 0, halftime_away = 0;
+    if (m.half?.includes("-")) {
+      [halftime_home, halftime_away] = m.half.replace(/[()HT]/g, "").split("-").map(x => parseInt(x.trim()) || 0);
+    }
+
+    const payload = {
+      league: l.league,
+      home_team: m.home,
+      away_team: m.away,
+      goals_home,
+      goals_away,
+      halftime_home,
+      halftime_away,
+      match_date: new Date().toISOString().split("T")[0]
+    };
+
+    await upsertMatch(payload);
+    console.log(`✅ ${l.league}: ${m.home} ${goals_home}-${goals_away} ${m.away}`);
+    totalInserted++;
+    await sleep(300);
+  }
+}
+
 
   await browser.close();
   console.log(`🏁 Inserate ${totalInserted} meciuri în Supabase.`);
 })();
+
