@@ -1,14 +1,13 @@
-name: Daily AIScore Scraper
+name: BetExplorer Scraper
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 22 * * *" # rulează zilnic la 22:00 UTC (~01:00 RO)
+    - cron: "30 22 * * *" # rulează la 01:30 RO
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -21,15 +20,5 @@ jobs:
       - name: Install dependencies
         run: npm install playwright node-fetch
 
-      - name: Install Playwright browsers
-        run: npx playwright install --with-deps
-
-      - name: Run scraper
-        run: npm run scrape
-
-      - name: Upload debug screenshot
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: aiscore_debug
-          path: ${{ github.workspace }}/aiscore_debug.png
+      - name: Run BetExplorer scraper
+        run: node scraper.js
